@@ -1,0 +1,17 @@
+{
+  "name": "claude-scheduler",
+  "version": "1.0.0",
+  "description": "Cloud-native daily scheduler powered by Claude via GitHub Actions",
+  "type": "module",
+  "main": "src/run.js",
+  "scripts": {
+    "start": "node src/run.js",
+    "test": "TASK_TITLE=hi TASK_MESSAGE=hi node src/run.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
