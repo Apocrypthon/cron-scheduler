@@ -1,0 +1,79 @@
+# strata-loop.yml — COPY THIS INTO EACH LOOP REPO as .github/workflows/strata-loop.yml
+#
+# It lives here as a template on purpose: this repo is the scheduler, not a loop
+# repo. It has no SEED.md and no `loop` branch, so running it here would fail
+# every 20 minutes forever.
+#
+# Before it will run in a loop repo:
+#   1. branch `loop` exists
+#   2. Settings -> Actions -> General -> Workflow permissions -> Read and write
+#   3. secret ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN — see auth note in README)
+#   4. replace the cron minutes below per the stagger table in the README
+
+name: strata-loop
+
+on:
+  schedule:
+    - cron: "1,21,41 * * * *"   # <- REPLACE minutes per the stagger table
+  workflow_dispatch: {}
+
+concurrency:
+  group: strata-loop
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  improve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+
+    steps:
+      - name: Run window check (kill-switch)
+        run: |
+          set -uo pipefail
+          RAW=$(curl -fsSL --retry 3 --retry-delay 2 --max-time 30 \
+            https://raw.githubusercontent.com/Apocrypthon/cron-scheduler/main/RUN_UNTIL \
+            || echo 0)
+
+          # Fail closed: anything we cannot parse as digits means "not running".
+          UNTIL=$(printf '%s' "$RAW" | tr -cd '0-9')
+          [ -n "$UNTIL" ] || UNTIL=0
+          NOW=$(date +%s)
+
+          if [ "$NOW" -ge "$UNTIL" ]; then
+            echo "Outside run window (now=$NOW until=$UNTIL) — skipping."
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          else
+            echo "In window — $(( (UNTIL - NOW) / 60 )) min remaining."
+          fi
+
+      - uses: actions/checkout@v4
+        if: env.SKIP != '1'
+        with:
+          ref: loop
+          fetch-depth: 0        # full history so the rebase before push works
+
+      - name: One improvement cycle
+        if: env.SKIP != '1'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: "Open SEED.md at the repo root and follow it exactly. You are one relay session: one verified increment, update the docs, leave the repo green. Do not push; the workflow pushes."
+          claude_args: "--max-turns 14 --dangerously-skip-permissions"
+
+      - name: Push increment
+        if: env.SKIP != '1'
+        run: |
+          set -euo pipefail
+          git config user.name  strata-loop
+          git config user.email loop@users.noreply.github.com
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes this cycle."
+            exit 0
+          fi
+          git commit -m "loop: automated increment"
+          git pull --rebase origin loop
+          git push origin HEAD:refs/heads/loop

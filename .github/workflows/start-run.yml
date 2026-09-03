@@ -1,0 +1,80 @@
+name: start-run
+
+# The phone-tap start/stop for the whole Strata loop.
+# Writes a single unix-epoch deadline into RUN_UNTIL at repo root.
+# Every loop repo reads that file before doing any work.
+#
+#   Start 6 hours : Actions -> start-run -> Run workflow -> hours 6
+#   Stop now      : Actions -> start-run -> Run workflow -> hours 0
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Run window in hours (0 stops the loop)"
+        required: true
+        default: "6"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: start-run
+  cancel-in-progress: false
+
+jobs:
+  set-window:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write RUN_UNTIL
+        env:
+          HOURS: ${{ inputs.hours }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Validate before arithmetic: the input is attacker-shaped free text.
+          case "$HOURS" in
+            ''|*[!0-9]*)
+              echo "::error::hours must be a whole number, got: '$HOURS'"
+              exit 1
+              ;;
+          esac
+
+          NOW=$(date +%s)
+          if [ "$HOURS" -eq 0 ]; then
+            UNTIL=0
+            MSG="run window: stopped"
+          else
+            UNTIL=$(( NOW + HOURS * 3600 ))
+            MSG="run window: ${HOURS}h"
+          fi
+
+          echo "$UNTIL" > RUN_UNTIL
+
+          {
+            echo "### $MSG"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| RUN_UNTIL | \`$UNTIL\` |"
+            if [ "$UNTIL" -eq 0 ]; then
+              echo "| expires | — (loop stopped) |"
+            else
+              echo "| expires | $(date -u -d "@$UNTIL" '+%Y-%m-%d %H:%M:%S UTC') |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          git config user.name  strata-loop
+          git config user.email loop@users.noreply.github.com
+          git add RUN_UNTIL
+          if git diff --cached --quiet; then
+            echo "RUN_UNTIL already $UNTIL — nothing to commit."
+            exit 0
+          fi
+          git commit -m "$MSG"
+          git push origin "HEAD:refs/heads/$BRANCH"
